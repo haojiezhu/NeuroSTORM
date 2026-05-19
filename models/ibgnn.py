@@ -72,14 +72,13 @@ class InterpretableGraphConv(nn.Module):
         if edge_weight is not None:
             edge_attention = edge_attention * edge_weight
 
-        # Message passing
-        out = torch.zeros(x.size(0), self.out_channels, device=x.device)
-        for i in range(edge_index.size(1)):
-            src, dst = edge_index[0, i], edge_index[1, i]
-            out[dst] += edge_attention[i] * x_transformed[src]
+        # Message passing (vectorized via index_add_)
+        messages = edge_attention.unsqueeze(-1) * x_transformed[edge_index[0]]
+        out = torch.zeros(x.size(0), self.out_channels, device=x.device, dtype=messages.dtype)
+        out.index_add_(0, edge_index[1], messages)
 
         if self.bias is not None:
-            out += self.bias
+            out = out + self.bias
 
         return out, edge_attention
 
@@ -114,13 +113,11 @@ class NodeAttentionPooling(nn.Module):
             # Apply softmax per graph
             node_attention = softmax(node_attention, batch)
 
-            # Weighted sum pooling
-            batch_size = batch.max().item() + 1
-            pooled = torch.zeros(batch_size, x.size(1), device=x.device)
-
-            for i in range(batch_size):
-                mask = (batch == i)
-                pooled[i] = (x[mask] * node_attention[mask].unsqueeze(-1)).sum(dim=0)
+            # Weighted sum pooling (vectorized via index_add_)
+            batch_size = int(batch.max().item()) + 1
+            weighted_x = x * node_attention.unsqueeze(-1)
+            pooled = torch.zeros(batch_size, x.size(1), device=x.device, dtype=weighted_x.dtype)
+            pooled.index_add_(0, batch, weighted_x)
         else:
             # Single graph
             node_attention = F.softmax(node_attention, dim=0)

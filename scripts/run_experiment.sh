@@ -153,8 +153,8 @@ Options:
   --seed <n>              Random seed (default: 1)
   --strategy <s>          Training strategy (default: ddp)
   --load_model_path <p>   Path to checkpoint. For pretrain: resume training. For finetune: load pretrained weights.
-  --sampling_strategy <s> Multi-dataset sampling: uniform_subsample or loss_weighted (pretrain only)
-  --max_samples_per_dataset <n>  Max samples per dataset per epoch (default: 500, pretrain only)
+  --reweighting_strategy <s> Multi-dataset reweighting: hard_random|hard_loss|soft_random|soft_loss (pretrain only)
+  --topk <n>              Per-dataset, per-epoch subject budget (default: 10000, pretrain only)
   --dry_run               Print command without executing
   -- <extra_args>         Pass additional arguments to main.py
 
@@ -193,8 +193,8 @@ while [[ $# -gt 0 ]]; do
         --strategy)    STRATEGY="$2"; shift 2 ;;
         --task_name)   TASK_NAME_OVERRIDE="$2"; shift 2 ;;
         --load_model_path) LOAD_MODEL_PATH="$2"; shift 2 ;;
-        --sampling_strategy) SAMPLING_STRATEGY="$2"; shift 2 ;;
-        --max_samples_per_dataset) MAX_SAMPLES_PER_DATASET="$2"; shift 2 ;;
+        --reweighting_strategy) REWEIGHTING_STRATEGY="$2"; shift 2 ;;
+        --topk) TOPK="$2"; shift 2 ;;
         --dry_run)     DRY_RUN=true; shift ;;
         --help|-h)     print_usage; exit 0 ;;
         --)            shift; EXTRA_ARGS="$*"; break ;;
@@ -572,11 +572,11 @@ case "$MODE" in
         if [[ -n "$LOAD_MODEL_PATH" ]]; then
             CMD+=" --load_model_path $LOAD_MODEL_PATH"
         fi
-        if [[ -n "$SAMPLING_STRATEGY" ]]; then
-            CMD+=" --sampling_strategy $SAMPLING_STRATEGY"
+        if [[ -n "$REWEIGHTING_STRATEGY" ]]; then
+            CMD+=" --reweighting_strategy $REWEIGHTING_STRATEGY"
         fi
-        if [[ -n "$MAX_SAMPLES_PER_DATASET" ]]; then
-            CMD+=" --max_samples_per_dataset $MAX_SAMPLES_PER_DATASET"
+        if [[ -n "$TOPK" ]]; then
+            CMD+=" --topk $TOPK"
         fi
         CMD+=" --auto_resume"
         ;;

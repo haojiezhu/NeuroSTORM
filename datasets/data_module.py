@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Subset, ConcatDataset, Sampler
+from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.data import DataLoader as GeometricDataLoader
 from .fmri_datasets import HCP1200, ABCD, UKB, Cobre, ADHD200, UCLA, HCPEP, HCPTASK, GOD, MOVIE, TransDiag
 from .roi_datasets import ROIDataset, FCDataset, FCGraphDataset
@@ -61,30 +62,60 @@ class MultiDatasetSampler(Sampler):
 
     def __iter__(self):
         indices = self._compute_indices()
-        # DDP sharding: each rank takes its slice
         if self.world_size > 1:
-            indices = indices[self.rank::self.world_size]
+            # Pad indices to a multiple of world_size so every rank iterates the
+            # same number of batches. This avoids DDP hangs from uneven loaders.
+            rem = len(indices) % self.world_size
+            if rem != 0:
+                indices = list(indices) + list(indices[: self.world_size - rem])
+            indices = indices[self.rank :: self.world_size]
         return iter(indices)
 
     def __len__(self):
         total = len(self._compute_indices())
         if self.world_size > 1:
-            return (total + self.world_size - 1) // self.world_size
+            rem = total % self.world_size
+            if rem != 0:
+                total += self.world_size - rem
+            return total // self.world_size
         return total
 
 
-class UniformSubsampleStrategy(MultiDatasetSampler):
-    """Strategy 1: Uniform subsampling by subject.
+class _SubjectGroupSampler(MultiDatasetSampler):
+    """Base for subject-grouped reweighting strategies.
 
-    Each epoch, randomly sample at most `max_subjects` subjects from each
-    sub-dataset, then include ALL clips belonging to those subjects.
-    Different random subset of subjects each epoch.
+    Operates on subjects within each sub-dataset: scores all subjects, then either
+    picks the top-k (hard) or weight-samples k of them (soft). All clips of the
+    chosen subjects are included in that epoch's indices.
+
+    Subclasses implement `_score_subjects(rng, ds_idx, all_subjs)` which returns
+    a 1D weight array (one weight per subject in `all_subjs`).
     """
 
-    def __init__(self, concat_dataset, max_samples_per_dataset=500, seed=0):
+    def __init__(self, concat_dataset, topk=10000, mode='hard', seed=0, fixed=False):
+        """
+        Args:
+            fixed: when True (val/test), compute indices ONCE at construction
+                time and reuse forever — Lightning needs eval loaders to have
+                stable length across epochs. When False (train), recompute each
+                epoch; per-epoch length naturally varies because subjects have
+                different clip counts.
+        """
         super().__init__(concat_dataset, seed=seed)
-        self.max_subjects = max_samples_per_dataset
+        if mode not in ('hard', 'soft'):
+            raise ValueError(f"mode must be 'hard' or 'soft', got {mode}")
+        self.topk = topk
+        self.mode = mode
         self._subject_groups = self._build_subject_groups()
+        # Optional per-dataset, per-subject losses for the loss-based variants.
+        # List[dict[subj_idx -> mean_loss]] of length num_datasets.
+        self._subject_losses = []
+        self.fixed = fixed
+        # Indices cache for `fixed=True` (val/test). Set on first compute.
+        self._frozen_indices = None
+        if fixed:
+            # Eagerly lock indices at init so DDP ranks agree on length.
+            self._frozen_indices = self._sample_indices()
 
     def _build_subject_groups(self):
         """Build per-dataset mapping: subject_index -> list of global indices."""
@@ -102,69 +133,99 @@ class UniformSubsampleStrategy(MultiDatasetSampler):
             offset += len(ds.data)
         return groups
 
-    def _compute_indices(self):
-        rng = np.random.RandomState(self.seed + self.epoch)
-        indices = []
-        for subj_to_indices in self._subject_groups:
-            all_subjs = list(subj_to_indices.keys())
-            n = min(len(all_subjs), self.max_subjects)
-            chosen_subjs = rng.choice(all_subjs, n, replace=False)
-            for s in chosen_subjs:
-                indices.extend(subj_to_indices[s])
-        rng.shuffle(indices)
-        return indices
-
-    def __len__(self):
-        return len(self._compute_indices())
-
-
-class LossWeightedStrategy(MultiDatasetSampler):
-    """Strategy 2: Loss-weighted resampling.
-
-    Each epoch, the number of samples drawn from each dataset is proportional
-    to its average loss from the previous epoch. Datasets with higher loss get
-    more samples, preventing training from being dominated by easy/large
-    datasets. Falls back to uniform sampling on the first epoch.
-
-    Call `update_losses(per_dataset_losses)` at the end of each epoch with a
-    list of average losses (one per sub-dataset).
-    """
-
-    def __init__(self, concat_dataset, total_samples_per_epoch=2500, seed=0):
-        super().__init__(concat_dataset, seed=seed)
-        self.total_samples = total_samples_per_epoch
-        self._per_dataset_weights = np.ones(self.num_datasets) / self.num_datasets
-
-    def update_losses(self, per_dataset_losses):
-        """Update sampling weights based on per-dataset average losses.
+    def update_subject_losses(self, per_dataset_subject_losses):
+        """Optional hook for loss-based variants.
 
         Args:
-            per_dataset_losses: list/array of length num_datasets, each entry
-                is the mean training loss for that dataset in the last epoch.
+            per_dataset_subject_losses: list of dict {subj_idx -> mean_loss}
+                aligned with the order of self.concat_dataset.datasets.
         """
-        losses = np.array(per_dataset_losses, dtype=np.float64)
-        losses = np.clip(losses, 1e-8, None)
-        self._per_dataset_weights = losses / losses.sum()
+        self._subject_losses = per_dataset_subject_losses
 
-    def _compute_indices(self):
+    def _score_subjects(self, rng, ds_idx, all_subjs):
+        raise NotImplementedError
+
+    def _sample_indices(self):
+        """Run the raw subject-level sampling for the current epoch."""
         rng = np.random.RandomState(self.seed + self.epoch)
         indices = []
-        ranges = self._dataset_ranges()
-        per_dataset_n = (self._per_dataset_weights * self.total_samples).astype(int)
-        remainder = self.total_samples - per_dataset_n.sum()
-        top_k = np.argsort(-self._per_dataset_weights)[:remainder]
-        per_dataset_n[top_k] += 1
-
-        for i, (start, end) in enumerate(ranges):
-            size = end - start
-            n = min(int(per_dataset_n[i]), size)
-            chosen = rng.choice(size, n, replace=False) + start
-            indices.extend(chosen.tolist())
+        for ds_idx, subj_to_indices in enumerate(self._subject_groups):
+            all_subjs = list(subj_to_indices.keys())
+            weights = self._score_subjects(rng, ds_idx, all_subjs)
+            n = min(len(all_subjs), self.topk)
+            if self.mode == 'hard':
+                # Take top-k by weight (descending); ties broken stably.
+                if n >= len(all_subjs):
+                    chosen = np.arange(len(all_subjs))
+                else:
+                    chosen = np.argpartition(-weights, n - 1)[:n]
+            else:
+                # Soft: weighted sampling without replacement.
+                w = np.clip(weights, 1e-8, None).astype(np.float64)
+                probs = w / w.sum()
+                chosen = rng.choice(len(all_subjs), size=n, replace=False, p=probs)
+            for i in chosen:
+                indices.extend(subj_to_indices[all_subjs[i]])
         rng.shuffle(indices)
         return indices
 
-    def __len__(self):
-        return self.total_samples
+    def _compute_indices(self):
+        # Fixed mode (val/test): always return the indices computed at __init__.
+        if self.fixed:
+            return self._frozen_indices
+        # Train mode: re-sample each epoch. Length varies naturally because
+        # different topk subjects have different clip counts.
+        return self._sample_indices()
+
+
+class _RandomScoreMixin:
+    """Score subjects with i.i.d. Uniform[0, 2.0] weights each epoch."""
+    def _score_subjects(self, rng, ds_idx, all_subjs):
+        return rng.uniform(0.0, 2.0, size=len(all_subjs))
+
+
+class _LossScoreMixin:
+    """Score subjects by their last-epoch mean loss; falls back to random
+    on the first epoch (or for unseen subjects)."""
+    def _score_subjects(self, rng, ds_idx, all_subjs):
+        if not self._subject_losses or ds_idx >= len(self._subject_losses) or not self._subject_losses[ds_idx]:
+            return rng.uniform(0.0, 2.0, size=len(all_subjs))
+        losses = self._subject_losses[ds_idx]
+        # Random fill for subjects with no loss yet, so they get sampled in.
+        rand_fill = rng.uniform(0.0, 2.0, size=len(all_subjs))
+        weights = np.array([losses.get(s, rand_fill[i]) for i, s in enumerate(all_subjs)],
+                           dtype=np.float64)
+        return weights
+
+
+class HardRandomReweighting(_RandomScoreMixin, _SubjectGroupSampler):
+    """Hard random: every epoch, draw uniform random weights ∈ [0, 2.0] for ALL
+    subjects in each dataset, then keep the top-k. Selected subjects differ each
+    epoch but the count stays at `topk`."""
+    def __init__(self, concat_dataset, topk=10000, seed=0, fixed=False):
+        super().__init__(concat_dataset, topk=topk, mode='hard', seed=seed, fixed=fixed)
+
+
+class HardLossReweighting(_LossScoreMixin, _SubjectGroupSampler):
+    """Hard loss: keep the top-k highest-loss subjects per dataset. First epoch
+    falls back to random (no loss info yet). Call `update_subject_losses(...)`
+    at end of each epoch."""
+    def __init__(self, concat_dataset, topk=10000, seed=0, fixed=False):
+        super().__init__(concat_dataset, topk=topk, mode='hard', seed=seed, fixed=fixed)
+
+
+class SoftRandomReweighting(_RandomScoreMixin, _SubjectGroupSampler):
+    """Soft random: weighted sampling (without replacement) of `topk` subjects per
+    dataset using Uniform[0, 2.0] weights."""
+    def __init__(self, concat_dataset, topk=10000, seed=0, fixed=False):
+        super().__init__(concat_dataset, topk=topk, mode='soft', seed=seed, fixed=fixed)
+
+
+class SoftLossReweighting(_LossScoreMixin, _SubjectGroupSampler):
+    """Soft loss: weighted sampling (without replacement) of `topk` subjects per
+    dataset where each subject's weight is its last-epoch mean loss."""
+    def __init__(self, concat_dataset, topk=10000, seed=0, fixed=False):
+        super().__init__(concat_dataset, topk=topk, mode='soft', seed=seed, fixed=fixed)
 
 
 # --- Add new strategies here ---
@@ -177,27 +238,49 @@ class LossWeightedStrategy(MultiDatasetSampler):
 #         ...
 
 
-SAMPLING_STRATEGIES = {
-    "uniform_subsample": UniformSubsampleStrategy,
-    "loss_weighted": LossWeightedStrategy,
+REWEIGHTING_STRATEGIES = {
+    "hard_random": HardRandomReweighting,
+    "hard_loss": HardLossReweighting,
+    "soft_random": SoftRandomReweighting,
+    "soft_loss": SoftLossReweighting,
     # Register new strategies here
 }
 
 
-def build_multi_dataset_sampler(strategy_name, concat_dataset, hparams):
-    """Factory function to build a multi-dataset sampler from hparams."""
+def build_multi_dataset_sampler(strategy_name, concat_dataset, hparams, mode='train'):
+    """Factory function to build a multi-dataset sampler from hparams.
+
+    For mode in {'val', 'test'}, topk is scaled from the train value by
+    (split_ratio / train_split) so eval sees the same subject ratio.
+    """
     seed = getattr(hparams, 'seed', 0)
-    if strategy_name == "uniform_subsample":
-        max_samples = getattr(hparams, 'max_samples_per_dataset', 500)
-        return UniformSubsampleStrategy(concat_dataset, max_samples_per_dataset=max_samples, seed=seed)
-    elif strategy_name == "loss_weighted":
-        num_datasets = len(concat_dataset.cumulative_sizes)
-        max_samples = getattr(hparams, 'max_samples_per_dataset', 500)
-        total = max_samples * num_datasets
-        return LossWeightedStrategy(concat_dataset, total_samples_per_epoch=total, seed=seed)
+    train_topk = getattr(hparams, 'topk', 10000)
+    train_split = getattr(hparams, 'train_split', 0.9)
+    val_split = getattr(hparams, 'val_split', 0.1)
+    test_split = max(0.0, 1.0 - train_split - val_split) or val_split
+
+    if mode == 'train':
+        topk = train_topk
+        epoch_seed = seed
+    elif mode == 'val':
+        topk = max(1, int(round(train_topk * (val_split / max(train_split, 1e-8)))))
+        epoch_seed = seed + 10_000
+    elif mode == 'test':
+        topk = max(1, int(round(train_topk * (test_split / max(train_split, 1e-8)))))
+        epoch_seed = seed + 20_000
     else:
-        raise ValueError(f"Unknown sampling strategy: {strategy_name}. "
-                         f"Available: {list(SAMPLING_STRATEGIES.keys())}")
+        raise ValueError(f"Unknown mode: {mode}")
+
+    if strategy_name not in REWEIGHTING_STRATEGIES:
+        raise ValueError(f"Unknown reweighting strategy: {strategy_name}. "
+                         f"Available: {list(REWEIGHTING_STRATEGIES.keys())}")
+
+    cls = REWEIGHTING_STRATEGIES[strategy_name]
+    # Eval modes always use random scoring (no loss feedback during eval).
+    if mode != 'train' and strategy_name.endswith('_loss'):
+        cls = REWEIGHTING_STRATEGIES[strategy_name.replace('_loss', '_random')]
+    # Val / test: lock the sampled subjects across epochs. Train: re-sample each epoch.
+    return cls(concat_dataset, topk=topk, seed=epoch_seed, fixed=(mode != 'train'))
 
 
 def _rank0_print(*args, **kwargs):
@@ -517,14 +600,44 @@ class fMRIDataModule(pl.LightningDataModule):
 
             print('Load dataset HCP1200, {} subjects'.format(len(final_dict)))
             
+        elif self.hparams.dataset_name in ("HCPA", "HCPD"):
+            csv_name = "hcpa-rest.csv" if self.hparams.dataset_name == "HCPA" else "hcpd-rest.csv"
+            subject_list = [subj for subj in os.listdir(img_root)]
+
+            meta_data = pd.read_csv(os.path.join(self.hparams.image_path, "metadata", csv_name))
+            if self.hparams.task_name == 'sex':
+                task_name = 'sex'
+            elif self.hparams.task_name == 'age':
+                task_name = 'interview_age'
+            else:
+                raise ValueError('downstream task not supported')
+
+            cols = ['subject_id', task_name] if task_name == 'sex' else ['subject_id', task_name, 'sex']
+            meta_task = meta_data[cols].dropna()
+
+            for subject in subject_list:
+                if subject in meta_task['subject_id'].values:
+                    target = meta_task[meta_task["subject_id"] == subject][task_name].values[0]
+                    if task_name == 'sex':
+                        target = 1 if str(target).upper().startswith("M") else 0
+                        sex = target
+                    else:
+                        # interview_age is in months -> convert to years
+                        target = float(target) / 12.0
+                        sex_raw = meta_task[meta_task["subject_id"] == subject]["sex"].values[0]
+                        sex = 1 if str(sex_raw).upper().startswith("M") else 0
+                    final_dict[subject] = [sex, target]
+
+            print(f'Load dataset {self.hparams.dataset_name}, {len(final_dict)} subjects')
+
         elif self.hparams.dataset_name == "ABCD":
             subject_list = [subj for subj in os.listdir(img_root)]
             
             meta_data = pd.read_csv(os.path.join(self.hparams.image_path, "metadata", "abcd-rest.csv"))
             if self.hparams.task_name == 'sex': task_name = 'sex'
-            elif self.hparams.downstream_task == 'age': task_name = 'age'
+            elif self.hparams.task_name == 'age': task_name = 'interview_age'
             else: raise ValueError('downstream task not supported')
-           
+
             if task_name == 'sex':
                 meta_task = meta_data[['subjectkey', task_name]].dropna()
             else:
@@ -535,6 +648,9 @@ class fMRIDataModule(pl.LightningDataModule):
                     target = meta_task[meta_task["subjectkey"]==subject][task_name].values[0]
                     if task_name == 'sex':
                         target = 1 if target == "M" else 0
+                    elif task_name == 'interview_age':
+                        # ABCD interview_age is in months -> convert to years
+                        target = float(target) / 12.0
                     sex = meta_task[meta_task["subjectkey"]==subject]["sex"].values[0]
                     sex = 1 if sex == "M" else 0
                     final_dict[subject] = [sex, target]
@@ -983,7 +1099,7 @@ class fMRIDataModule(pl.LightningDataModule):
         use_strategy = (
             self.hparams.pretraining
             and isinstance(self.train_dataset, ConcatDataset)
-            and getattr(self.hparams, 'sampling_strategy', None) is not None
+            and getattr(self.hparams, 'reweighting_strategy', None) is not None
         )
 
         # Use GeometricDataLoader for graph datasets
@@ -993,20 +1109,41 @@ class fMRIDataModule(pl.LightningDataModule):
             self.test_loader = GeometricDataLoader(self.test_dataset, **get_params(train=False))
         elif use_strategy:
             self._train_sampler = build_multi_dataset_sampler(
-                self.hparams.sampling_strategy,
+                self.hparams.reweighting_strategy,
                 self.train_dataset,
                 self.hparams,
+                mode='train',
             )
             train_params = get_params(train=True)
             train_params["shuffle"] = False
             train_params["sampler"] = self._train_sampler
             self.train_loader = DataLoader(self.train_dataset, **train_params)
-            self.val_loader = DataLoader(self.val_dataset, **get_params(train=False))
-            self.test_loader = DataLoader(self.test_dataset, **get_params(train=False))
+            self._eval_params = get_params(train=False)
+            self._use_distributed_eval = True
+            self.val_loader = None
+            self.test_loader = None
         else:
             self.train_loader = DataLoader(self.train_dataset, **get_params(train=True))
             self.val_loader = DataLoader(self.val_dataset, **get_params(train=False))
             self.test_loader = DataLoader(self.test_dataset, **get_params(train=False))
+
+    def _build_eval_loader(self, dataset, mode):
+        params = dict(self._eval_params)
+        # If user enabled a multi-dataset sampling strategy and this is a
+        # ConcatDataset, mirror the train-time subsampling on val/test by
+        # building an eval-mode strategy sampler. The custom sampler shards
+        # itself across DDP ranks, so we don't also wrap it in DistributedSampler.
+        strategy_name = getattr(self.hparams, 'reweighting_strategy', None)
+        if strategy_name is not None and isinstance(dataset, ConcatDataset):
+            sampler = build_multi_dataset_sampler(
+                strategy_name, dataset, self.hparams, mode=mode,
+            )
+            params["sampler"] = sampler
+            params["shuffle"] = False
+        elif self._use_distributed_eval and torch.distributed.is_available() and torch.distributed.is_initialized():
+            params["sampler"] = DistributedSampler(dataset, shuffle=False)
+            params["shuffle"] = False
+        return DataLoader(dataset, **params)
 
     def train_dataloader(self):
         if self._train_sampler is not None:
@@ -1014,9 +1151,14 @@ class fMRIDataModule(pl.LightningDataModule):
         return self.train_loader
 
     def val_dataloader(self):
+        if self.val_loader is None:
+            self.val_loader = self._build_eval_loader(self.val_dataset, mode='val')
+            self.test_loader = self._build_eval_loader(self.test_dataset, mode='test')
         return [self.val_loader, self.test_loader]
 
     def test_dataloader(self):
+        if self.test_loader is None:
+            self.test_loader = self._build_eval_loader(self.test_dataset, mode='test')
         return self.test_loader
 
     def predict_dataloader(self):
@@ -1048,14 +1190,17 @@ class fMRIDataModule(pl.LightningDataModule):
         group.add_argument("--shuffle_time_sequence", action='store_true')
         group.add_argument("--limit_training_samples", type=float, default=None, help="use if you want to limit training samples")
 
-        # Multi-dataset sampling strategy (pretraining only)
-        group.add_argument("--sampling_strategy", type=str, default=None,
-                          choices=list(SAMPLING_STRATEGIES.keys()),
-                          help="Multi-dataset sampling strategy for pretraining. "
-                               "'uniform_subsample': cap each dataset to --max_samples_per_dataset per epoch. "
-                               "'loss_weighted': resample proportional to per-dataset loss.")
-        group.add_argument("--max_samples_per_dataset", type=int, default=500,
-                          help="Max samples per dataset per epoch (used by uniform_subsample and as base for loss_weighted)")
+        # Multi-dataset reweighting strategy (pretraining only)
+        group.add_argument("--reweighting_strategy", type=str, default=None,
+                          choices=list(REWEIGHTING_STRATEGIES.keys()),
+                          help="Multi-dataset reweighting strategy for pretraining. "
+                               "Two axes: hard vs soft × random vs loss. "
+                               "'hard_random' / 'hard_loss': score every subject (uniform random or last-epoch loss), "
+                               "keep top-k. 'soft_random' / 'soft_loss': weighted sampling of k subjects per dataset.")
+        group.add_argument("--topk", type=int, default=10000,
+                          help="Per-dataset, per-epoch budget of subjects (top-k for 'hard', "
+                               "weighted-sample size for 'soft'). Not a critical hyperparameter; "
+                               "may differ across runs without affecting checkpoint compatibility.")
 
         # New arguments for ROI/FC data
         group.add_argument("--data_type", type=str, default="voxel", choices=["voxel", "roi", "fc", "fc_graph", "fc_bnt"],
