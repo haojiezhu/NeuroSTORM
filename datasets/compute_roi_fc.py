@@ -35,7 +35,7 @@ import torch
 from scipy.ndimage import zoom
 from multiprocessing import Pool
 from functools import partial
-from sklearn.covariance import GraphicalLassoCV
+from sklearn.covariance import LedoitWolf
 
 
 ATLAS_DIR = os.path.join(os.path.dirname(__file__), 'atlas')
@@ -122,20 +122,22 @@ def compute_correlation(roi_data):
 
 
 def compute_partial_correlation(roi_data):
+    # Ledoit-Wolf shrinkage covariance -> precision -> normalize.
+    # Analytic, no CV, robust to T < P (short scans + large atlases).
+    # Matches nilearn ConnectivityMeasure(kind='partial correlation') default.
     X = roi_data.T  # [T, num_rois]
     try:
-        model = GraphicalLassoCV(cv=3, max_iter=100, tol=1e-3, verbose=0)
-        model.fit(X)
-        precision = model.precision_
+        cov = LedoitWolf(store_precision=True, assume_centered=False).fit(X)
+        precision = cov.precision_
     except Exception:
-        cov = np.cov(roi_data)
-        cov += np.eye(cov.shape[0]) * 1e-6
+        c = np.cov(roi_data)
+        c += np.eye(c.shape[0]) * 1e-3
         try:
-            precision = np.linalg.inv(cov)
+            precision = np.linalg.inv(c)
         except np.linalg.LinAlgError:
-            precision = np.linalg.pinv(cov)
+            precision = np.linalg.pinv(c)
 
-    diag = np.sqrt(np.diag(precision))
+    diag = np.sqrt(np.clip(np.diag(precision), 1e-12, None))
     partial_corr = -precision / np.outer(diag, diag)
     np.fill_diagonal(partial_corr, 1.0)
     return np.nan_to_num(partial_corr, nan=0.0, posinf=1.0, neginf=-1.0)

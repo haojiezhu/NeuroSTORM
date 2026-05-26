@@ -243,7 +243,8 @@ class BaseDataset(Dataset):
         return  len(self.data)
 
     def __getitem__(self, index):
-        _, subject_name, subject_path, start_frame, sequence_length, num_frames, target, sex = self.data[index]
+        _, subject_name, subject_path, start_frame, _stride, num_frames, target, sex = self.data[index]
+        sequence_length = self.sample_duration
 
         if self.contrastive or self.mae:
             y, rand_y = self.load_sequence(subject_path, start_frame, sequence_length)
@@ -586,7 +587,33 @@ class TransDiag(BaseDataset):
                 data_tuple = (i, subject, subject_path, start_frame, self.stride, num_frames, target, sex)
                 data.append(data_tuple)
 
-        if self.train: 
+        if self.train:
             self.target_values = np.array([tup[6] for tup in data]).reshape(-1, 1)
-        
+
+        return data
+
+
+class ABIDE(BaseDataset):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def _set_data(self, root, subject_dict):
+        data = []
+        img_root = os.path.join(root, 'img')
+
+        for i, subject_name in enumerate(subject_dict):
+            sex, target = subject_dict[subject_name]
+            subject_path = os.path.join(img_root, subject_name)
+            num_frames = self._count_frames(subject_path)
+            if num_frames < self.sample_duration:
+                continue
+            session_duration = num_frames - self.sample_duration + 1
+
+            for start_frame in range(0, session_duration, self.stride):
+                data_tuple = (i, subject_name, subject_path, start_frame, self.stride, num_frames, target, sex)
+                data.append(data_tuple)
+
+        if self.train:
+            self.target_values = np.array([tup[6] for tup in data]).reshape(-1, 1)
+
         return data

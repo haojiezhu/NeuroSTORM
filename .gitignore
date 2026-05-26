@@ -44,3 +44,13 @@ nas
 models/models
 NeuroSTORM/
 env_keys
+scripts/neurostorm_ablation_b45.sh
+scripts/neurostorm_ablation_p2_age_retry.sh
+scripts/neurostorm_ablation_phase2.sh
+scripts/neurostorm_ablation_retry.sh
+scripts/neurostorm_ablation_retry2.sh
+scripts/neurostorm_ablation.sh
+scripts/neurostorm_tpt_phase3.sh
+scripts/neurostorm_tpt4_sex_retry.sh
+scripts/dataset_download/extract_2d_slices.py
+scripts/dataset_download/README_2d.md

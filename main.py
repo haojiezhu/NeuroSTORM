@@ -302,39 +302,11 @@ def cli_main():
         else:
             print('[STRD] WARNING: --use_strd requires --use_mae and --model neurostorm; silently disabled')
 
-    if args.use_prompt_tuning and getattr(args, 'pretraining', False):
-        print('[TPT] WARNING: --use_prompt_tuning is ignored during pretraining')
-
-    if args.use_prompt_tuning and not getattr(args, 'pretraining', False):
-        # Task-specific Prompt Tuning: freeze backbone except per-block prompts;
-        # the output_head remains fully trainable (it's a separate module under `model`).
-        model.model.eval()
-        n_prompt, n_frozen = 0, 0
-        for name, param in model.model.named_parameters():
-            if 'prompt' in name:
-                param.requires_grad = True
-                n_prompt += param.numel()
-            else:
-                param.requires_grad = False
-                n_frozen += param.numel()
-
-        # Also count output_head (trainable by default; lives outside model.model)
-        n_head = 0
-        if getattr(model, 'output_head', None) is not None:
-            n_head = sum(p.numel() for p in model.output_head.parameters() if p.requires_grad)
-
-        n_trainable_total = n_prompt + n_head
-        n_full = n_prompt + n_frozen + n_head  # full-model parameter count
-        pct = (100.0 * n_trainable_total / n_full) if n_full > 0 else 0.0
-        print(f'[TPT] prompt params:   {n_prompt:>12,}')
-        print(f'[TPT] head params:     {n_head:>12,}')
-        print(f'[TPT] trainable total: {n_trainable_total:>12,}')
-        print(f'[TPT] frozen backbone: {n_frozen:>12,}')
-        print(f'[TPT] full model:      {n_full:>12,}')
-        print(f'[TPT] trainable ratio: {pct:.2f}%  (vs. full fine-tuning)')
-        if n_prompt == 0:
-            print('[TPT] WARNING: no parameters with "prompt" in name found. '
-                  'Did you set --prompt_len > 0 with --model neurostorm?')
+    if args.tpt_strategy != 'none' and getattr(args, 'pretraining', False):
+        print(f"[TPT] WARNING: --tpt_strategy={args.tpt_strategy} ignored during pretraining")
+    elif args.tpt_strategy != 'none':
+        from models.peft import apply_tpt
+        apply_tpt(model, args.tpt_strategy)
 
     # ------------ run -------------
     if args.test_only:

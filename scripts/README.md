@@ -97,22 +97,8 @@ bash scripts/run_experiment.sh \
     --model neurostorm \
     --dataset hcp1200,hcpa,hcpd,abcd,ukb \
     --mode pretrain \
-    --gpus 1,2,3 \
-    --sampling_strategy uniform_subsample
+    --gpus 1,2,3
 ```
-
-### Sampling Strategies
-
-When pretraining on multiple datasets of very different sizes (e.g. UKB ~12k vs
-HCPD ~600), a sampling strategy prevents large datasets from dominating.
-
-| Strategy             | Description                                                                 |
-| -------------------- | --------------------------------------------------------------------------- |
-| `uniform_subsample`  | Each epoch, randomly sample at most N subjects from each dataset. Different random subset each epoch. |
-| `loss_weighted`      | Resample proportional to per-dataset average loss from the previous epoch. Datasets with higher loss get more samples. |
-
-Use `--sampling_strategy <name>` and `--max_samples_per_dataset <N>` to enable.
-Without `--sampling_strategy`, all samples from all datasets are used every epoch.
 
 Under the hood:
 

@@ -54,7 +54,7 @@ def load_model(model_name, hparams=None):
                 drop_path_rate=hparams.attn_drop_rate,
                 attn_drop_rate=hparams.attn_drop_rate,
                 prompt_len=(getattr(hparams, 'prompt_len', 0)
-                            if getattr(hparams, 'use_prompt_tuning', False) else 0),
+                            if getattr(hparams, 'tpt_strategy', 'none') in ('prompt', 'prompt_ln') else 0),
             )
     elif model_name == "swift":
         from .swift import SwiFT

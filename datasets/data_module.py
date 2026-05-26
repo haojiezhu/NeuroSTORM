@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader, Subset, ConcatDataset, Sampler
 from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.data import DataLoader as GeometricDataLoader
-from .fmri_datasets import HCP1200, ABCD, UKB, Cobre, ADHD200, UCLA, HCPEP, HCPTASK, GOD, MOVIE, TransDiag
+from .fmri_datasets import HCP1200, ABCD, UKB, Cobre, ADHD200, UCLA, HCPEP, HCPTASK, GOD, MOVIE, TransDiag, ABIDE
 from .roi_datasets import ROIDataset, FCDataset, FCGraphDataset
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from utils.parser import str2bool
@@ -415,6 +415,8 @@ class fMRIDataModule(pl.LightningDataModule):
             return MOVIE
         elif name == 'TransDiag':
             return TransDiag
+        elif name == 'ABIDE':
+            return ABIDE
         else:
             raise NotImplementedError(f"Unsupported dataset: {name}")
 
@@ -886,9 +888,51 @@ class fMRIDataModule(pl.LightningDataModule):
                     final_dict[subject] = [0, 0]
                 else:
                     final_dict[subject] = [0, 1]
-            
+
             print('Load dataset MOVIE, {} subjects'.format(len(final_dict)))
-        
+
+        elif self.hparams.dataset_name == "ABIDE":
+            subject_list = [subj for subj in os.listdir(img_root)]
+
+            meta_data = pd.read_csv(os.path.join(self.hparams.image_path, "metadata", "phenotypic.csv"))
+
+            if self.hparams.task_name == 'sex':
+                task_name = 'sex'
+            elif self.hparams.task_name == 'age':
+                task_name = 'age'
+            elif self.hparams.task_name == 'diagnosis':
+                task_name = 'dx_group'
+            else:
+                raise ValueError('downstream task not supported')
+
+            cols = ['subj', task_name] if task_name == 'sex' else ['subj', task_name, 'sex']
+            meta_task = meta_data[cols].dropna()
+            meta_task = meta_task[meta_task['subj'].astype(str).str.len() > 0]
+            meta_task = meta_task.set_index('subj')
+
+            for subject in subject_list:
+                if subject not in meta_task.index:
+                    continue
+                row = meta_task.loc[subject]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+
+                sex_raw = row['sex']
+                # phenotypic encodes sex as 1=M, 2=F -> binary 1/0
+                sex = 1 if int(float(sex_raw)) == 1 else 0
+
+                if task_name == 'sex':
+                    target = sex
+                elif task_name == 'age':
+                    target = float(row['age'])
+                elif task_name == 'dx_group':
+                    # 1=ASD, 2=TC -> 1=patient, 0=control
+                    target = 1 if int(float(row['dx_group'])) == 1 else 0
+
+                final_dict[subject] = [sex, target]
+
+            print('Load dataset ABIDE, {} subjects'.format(len(final_dict)))
+
         if self.hparams.dataset_name == "TransDiag":
             subject_list = os.listdir(img_root)
 

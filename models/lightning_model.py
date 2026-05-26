@@ -84,11 +84,11 @@ class LightningModel(pl.LightningModule):
         self.metric = Metrics()
 
     def on_save_checkpoint(self, checkpoint):
-        # `topk` is a per-run knob, not a model property — strip it from the
-        # checkpoint so it never pins a future resume to the value used here.
+        # Per-run knobs that should not pin a future resume to the value used here.
         for hp_key in ("hyper_parameters", "datamodule_hyper_parameters"):
             if hp_key in checkpoint and isinstance(checkpoint[hp_key], dict):
                 checkpoint[hp_key].pop("topk", None)
+                checkpoint[hp_key].pop("max_epochs", None)
 
     def forward(self, x):
         return self.output_head(self.model(x))
@@ -748,13 +748,17 @@ class LightningModel(pl.LightningModule):
         group.add_argument("--attn_drop_rate", type=float, default=0, help="dropout rate of attention layers")
         group.add_argument("--reid_gallery_size", type=int, default=None, help="Limit gallery size when evaluating re-identification (use all if unset)")
 
-        # Task-specific Prompt Tuning (NeuroSTORM only)
-        group.add_argument("--use_prompt_tuning", action='store_true',
-                           help="Enable Task-specific Prompt Tuning: freeze backbone except per-block "
-                                "learnable prompts and the output head. Only effective for --model neurostorm.")
+        # Task-specific Parameter-efficient Tuning (NeuroSTORM only)
+        group.add_argument("--tpt_strategy", type=str, default="none",
+                           choices=["none", "prompt", "ln", "linear", "prompt_ln"],
+                           help="PEFT strategy: 'none' = full fine-tune; "
+                                "'prompt' = VPT-Deep per-block prompts + head; "
+                                "'ln' = LayerNorm gamma/beta + head; "
+                                "'linear' = head only; "
+                                "'prompt_ln' = prompt + LayerNorm + head.")
         group.add_argument("--prompt_len", type=int, default=50,
-                           help="Per-block prompt token length k (default 50). Only used when "
-                                "--use_prompt_tuning is set.")
+                           help="Per-block prompt token length k. Only used when "
+                                "--tpt_strategy=prompt.")
 
         # Spatiotemporal Redundancy Dropout (NeuroSTORM MAE pretraining only)
         group.add_argument("--use_strd", action='store_true',

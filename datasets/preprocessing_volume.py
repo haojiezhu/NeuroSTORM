@@ -82,6 +82,14 @@ def _mask_path_for(dataset_name, path):
         return None
     if dataset_name in {'abcd', 'cobre', 'hcpep'}:
         return path[:-19] + 'brain_mask.nii.gz'
+    if dataset_name == 'abide':
+        # ABIDE I (PCP CPAC): <SITE>_<SUBID>_func_preproc.nii.gz -> <SITE>_<SUBID>_func_mask.nii.gz
+        # ABIDE II (fmriprep): *_desc-preproc_bold.nii.gz -> *_desc-brain_mask.nii.gz
+        if path.endswith('_func_preproc.nii.gz'):
+            return path[: -len('_func_preproc.nii.gz')] + '_func_mask.nii.gz'
+        if path.endswith('_desc-preproc_bold.nii.gz'):
+            return path[: -len('_desc-preproc_bold.nii.gz')] + '_desc-brain_mask.nii.gz'
+        return None
     if dataset_name == 'movie':
         return path[:-57] + 'space-MNI152NLin2009cAsym_desc-brain_mask.nii.gz'
     if dataset_name == 'transdiag':
@@ -290,6 +298,17 @@ def determine_subject_name(dataset_name, filename):
         return filename.split('-')[1][:-4]
     elif dataset_name == 'adhd200':
         return filename.split('_')[2]
+    elif dataset_name == 'abide':
+        # ABIDE I PCP: <SITE>_<SUBID>_func_preproc.nii.gz -> SITE_SUBID
+        # ABIDE II fmriprep: sub-<ID>_ses-<S>_task-rest[_acq-X]_run-<N>_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz -> sub-<ID>[_ses-<S>][_run-<N>]
+        if filename.endswith('_func_preproc.nii.gz'):
+            return filename[: -len('_func_preproc.nii.gz')]
+        if filename.endswith('_desc-preproc_bold.nii.gz'):
+            stem = filename[: -len('_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz')]
+            parts = stem.split('_')
+            keep = [p for p in parts if p.startswith('sub-') or p.startswith('ses-') or p.startswith('run-')]
+            return '_'.join(keep) if keep else stem
+        return filename.split('.')[0]
     elif dataset_name == 'god':
         return filename[:6] + '_' + filename.split('perception_')[1][:6]
     elif dataset_name == 'hcpya':

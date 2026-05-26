@@ -125,8 +125,8 @@ NUM_WORKERS=""
 MAX_EPOCHS=""
 STRATEGY="ddp"
 LOAD_MODEL_PATH=""
-SAMPLING_STRATEGY=""
-MAX_SAMPLES_PER_DATASET=""
+REWEIGHTING_STRATEGY=""
+TOPK=""
 DRY_RUN=false
 
 print_usage() {
@@ -138,7 +138,7 @@ Usage:
 
 Required:
   --model <name>          Model name (neurostorm, swift, braingnn, bnt, lggnn, combraintf, ibgnn, brainnetcnn)
-  --dataset <name>        Dataset name (hcp1200, hcpa, hcpd, adhd200, cobre, ucla, hcptask, movie, transdiag, abcd, ukb).
+  --dataset <name>        Dataset name (hcp1200, hcpa, hcpd, adhd200, cobre, ucla, hcptask, movie, transdiag, abcd, ukb, abide).
                           In --mode pretrain a comma-separated list is accepted (e.g. hcp1200,hcpa,hcpd,abcd,ukb)
                           to jointly pretrain on multiple cohorts. Rejected for non-pretrain modes.
   --mode <mode>           Run mode: pretrain, finetune, train_scratch, test
@@ -606,6 +606,16 @@ case "$MODE" in
         if [[ -n "$task_val_split" ]]; then
             CMD+=" --val_split $task_val_split"
         fi
+
+        # Finetune-specific defaults from model yaml's `finetune:` block
+        ft_stride=$(yaml_get_nested "$MODEL_CONFIG" "finetune" "stride_between_seq")
+        ft_wd=$(yaml_get_nested "$MODEL_CONFIG" "finetune" "weight_decay")
+        ft_attn_drop=$(yaml_get_nested "$MODEL_CONFIG" "finetune" "attn_drop_rate")
+        ft_use_sched=$(yaml_get_nested "$MODEL_CONFIG" "finetune" "use_scheduler")
+        [[ -n "$ft_stride" ]] && CMD+=" --stride_between_seq $ft_stride"
+        [[ -n "$ft_wd" ]] && CMD+=" --weight_decay $ft_wd"
+        [[ -n "$ft_attn_drop" ]] && CMD+=" --attn_drop_rate $ft_attn_drop"
+        [[ "$ft_use_sched" == "true" ]] && CMD+=" --use_scheduler"
         ;;
 
     train_scratch)
