@@ -46,7 +46,14 @@ class MultiDatasetSampler(Sampler):
         return 1
 
     def set_epoch(self, epoch):
+        prev = self.epoch
         self.epoch = epoch
+        try:
+            rank = self.rank
+        except Exception:
+            rank = 0
+        print(f'[diag][rank{rank}] SAMPLER_SET_EPOCH cls={type(self).__name__} '
+              f'prev={prev} new={epoch}', flush=True)
 
     def _dataset_ranges(self):
         """Return list of (start, end) index ranges for each sub-dataset."""
@@ -62,6 +69,7 @@ class MultiDatasetSampler(Sampler):
 
     def __iter__(self):
         indices = self._compute_indices()
+        n_raw = len(indices)
         if self.world_size > 1:
             # Pad indices to a multiple of world_size so every rank iterates the
             # same number of batches. This avoids DDP hangs from uneven loaders.
@@ -69,6 +77,9 @@ class MultiDatasetSampler(Sampler):
             if rem != 0:
                 indices = list(indices) + list(indices[: self.world_size - rem])
             indices = indices[self.rank :: self.world_size]
+        print(f'[diag][rank{self.rank}] SAMPLER_ITER cls={type(self).__name__} '
+              f'epoch={self.epoch} world_size={self.world_size} '
+              f'n_raw={n_raw} n_after_shard={len(indices)}', flush=True)
         return iter(indices)
 
     def __len__(self):

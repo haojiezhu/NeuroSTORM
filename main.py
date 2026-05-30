@@ -314,9 +314,11 @@ def cli_main():
     else:
         if args.resume_ckpt_path is None:
             # New run
+            print(f'[diag] FIT_START fresh max_epochs={args.max_epochs}', flush=True)
             trainer.fit(model, datamodule=data_module)
         else:
             # Resume existing run
+            print(f'[diag] FIT_START resume_from={args.resume_ckpt_path} max_epochs={args.max_epochs}', flush=True)
             trainer.fit(model, datamodule=data_module, ckpt_path=args.resume_ckpt_path)
 
         trainer.test(model, dataloaders=data_module)

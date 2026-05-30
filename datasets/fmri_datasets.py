@@ -223,6 +223,9 @@ class BaseDataset(Dataset):
                 full_range = np.arange(0, num_frames - sample_duration + 1)
                 exclude_range = np.arange(start_frame - sample_duration, start_frame + sample_duration)
                 available_choices = np.setdiff1d(full_range, exclude_range)
+                if available_choices.size == 0:
+                    # subject too short to fit two non-overlapping clips — fall back to any valid start
+                    available_choices = full_range
                 random_start_frame = int(np.random.choice(available_choices, size=1, replace=False)[0])
                 rand_indices = range(random_start_frame, random_start_frame + sample_duration, self.stride_within_seq)
                 random_y = self._load_clip(subject_path, rand_indices)

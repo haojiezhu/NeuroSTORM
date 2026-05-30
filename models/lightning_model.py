@@ -89,6 +89,55 @@ class LightningModel(pl.LightningModule):
             if hp_key in checkpoint and isinstance(checkpoint[hp_key], dict):
                 checkpoint[hp_key].pop("topk", None)
                 checkpoint[hp_key].pop("max_epochs", None)
+        self._diag_ckpt('SAVE_CKPT', checkpoint)
+
+    def on_load_checkpoint(self, checkpoint):
+        self._diag_ckpt('LOAD_CKPT', checkpoint)
+
+    def on_train_epoch_start(self):
+        self._diag_train_epoch('TRAIN_EPOCH_START')
+
+    def on_train_epoch_end(self):
+        self._diag_train_epoch('TRAIN_EPOCH_END', include_last=True)
+
+    def on_validation_start(self):
+        self._diag(f'VAL_START epoch={self.current_epoch} global_step={self.global_step}')
+
+    def on_validation_end(self):
+        self._diag(f'VAL_END epoch={self.current_epoch} global_step={self.global_step}')
+
+    def _diag(self, msg):
+        try:
+            rank = self.trainer.global_rank
+        except Exception:
+            rank = 0
+        print(f'[diag][rank{rank}] {msg}', flush=True)
+
+    def _diag_train_epoch(self, label, include_last=False):
+        try:
+            bp = self.trainer.fit_loop.epoch_loop.batch_progress
+            cur, tot = bp.current.completed, bp.total.completed
+        except Exception as e:
+            cur = tot = f'<err:{e}>'
+        try:
+            sampler = self.trainer.train_dataloader.loaders.sampler if hasattr(self.trainer, 'train_dataloader') else None
+            slen = len(sampler) if sampler is not None else '?'
+        except Exception as e:
+            slen = f'<err:{e}>'
+        extra = f' is_last_batch={getattr(self.trainer, "is_last_batch", "?")}' if include_last else ''
+        self._diag(f'{label} epoch={self.current_epoch} global_step={self.global_step} '
+                   f'batch_cur_completed={cur} batch_tot_completed={tot} '
+                   f'train_sampler_len={slen}{extra}')
+
+    def _diag_ckpt(self, label, checkpoint):
+        ep = checkpoint.get('epoch') if isinstance(checkpoint, dict) else None
+        gs = checkpoint.get('global_step') if isinstance(checkpoint, dict) else None
+        bp = {}
+        try:
+            bp = checkpoint.get('loops', {}).get('fit_loop', {}).get('epoch_loop.batch_progress', {})
+        except Exception:
+            pass
+        self._diag(f'{label} ckpt_epoch={ep} ckpt_global_step={gs} ckpt_batch_progress={bp}')
 
     def forward(self, x):
         return self.output_head(self.model(x))
