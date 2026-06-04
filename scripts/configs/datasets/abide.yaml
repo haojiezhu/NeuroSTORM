@@ -10,6 +10,7 @@ tasks:
     num_classes: 2
 
 defaults:
+  split_root: ./nas/splits
   dataset_split_num: 1
   limit_training_samples: 1.0
   batch_size_override: 2

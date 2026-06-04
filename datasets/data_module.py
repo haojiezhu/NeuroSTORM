@@ -345,21 +345,17 @@ class fMRIDataModule(pl.LightningDataModule):
                 f"Got dataset_name={self.hparams.dataset_name} without --pretraining."
             )
 
-        # generate splits folder
+        split_root = getattr(self.hparams, 'split_root', './nas/splits')
         if self.hparams.pretraining:
-            # per-dataset split paths so each dataset keeps its own subject list
             self.split_file_paths = []
             for name in self.dataset_names:
-                split_dir_path = f'./data/splits/{name}/pretraining'
-                os.makedirs(split_dir_path, exist_ok=True)
+                split_dir_path = os.path.join(split_root, name)
                 self.split_file_paths.append(
                     os.path.join(split_dir_path, f"split_fixed_{self.hparams.dataset_split_num}.txt")
                 )
-            # keep legacy attribute pointing at the first dataset's split for backward compat
             self.split_file_path = self.split_file_paths[0]
         else:
-            split_dir_path = f'./data/splits/{self.dataset_names[0]}'
-            os.makedirs(split_dir_path, exist_ok=True)
+            split_dir_path = os.path.join(split_root, self.dataset_names[0])
             self.split_file_path = os.path.join(split_dir_path, f"split_fixed_{self.hparams.dataset_split_num}.txt")
             self.split_file_paths = [self.split_file_path]
 

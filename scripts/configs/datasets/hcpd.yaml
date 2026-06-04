@@ -5,5 +5,6 @@ image_path_fc: /data_ssd/cwang/fmri/hcpd_preprocessed
 pretrain_only: true
 
 defaults:
+  split_root: ./nas/splits
   dataset_split_num: 1
   batch_size_override: 8

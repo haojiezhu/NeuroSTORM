@@ -10,7 +10,7 @@
 set -uo pipefail
 
 PYTHON="/home/cwang/anaconda3/envs/neurostorm/bin/python"
-DATA_PATH="/data/cwang/remote/fmri/hcpya_preprocessed"
+DATA_PATH="/home/cwang/remote/fmri/hcpya_preprocessed"
 OUTPUT_BASE="output/task1"
 TASK_FILTER="${1:-all}"
 

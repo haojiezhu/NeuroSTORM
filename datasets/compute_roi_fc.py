@@ -9,7 +9,7 @@ Pipeline: fMRI volume -> ROI extraction (atlas parcellation) -> FC matrix
 Usage:
     # From data.pt blobs
     python datasets/compute_roi_fc.py \
-        --input_dir /data/cwang/remote/fmri/hcpya_preprocessed/img \
+        --input_dir /home/cwang/remote/fmri/hcpya_preprocessed/img \
         --input_format blob \
         --atlas_names cc200 aal3 \
         --fc_types correlation partial_correlation \
@@ -18,7 +18,7 @@ Usage:
 
     # From raw .nii.gz files
     python datasets/compute_roi_fc.py \
-        --input_dir /data/cwang/remote/fmri/raw_nii/hcp1200 \
+        --input_dir /home/cwang/remote/fmri/raw_nii/hcp1200 \
         --input_format nii \
         --atlas_names cc200 \
         --fc_types correlation \

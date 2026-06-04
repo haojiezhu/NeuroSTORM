@@ -18,7 +18,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 PYTHON = "/home/cwang/anaconda3/envs/neurostorm/bin/python"
-DATA_PATH = "/data/cwang/remote/fmri/hcpya_preprocessed"
+DATA_PATH = "/home/cwang/remote/fmri/hcpya_preprocessed"
 OUT_BASE = Path("output/sex_sweep")
 RESULTS_CSV = OUT_BASE / "results.csv"
 

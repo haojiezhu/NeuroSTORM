@@ -15,10 +15,10 @@ OUT_BASE = Path("output/cross_dataset")
 RESULTS_CSV = OUT_BASE / "results.csv"
 
 DATASETS = {
-    "HCPD": "/data/cwang/remote/fmri/hcpd_preprocessed",
-    "HCPA": "/data/cwang/remote/fmri/hcpa_processed",
-    "ABCD": "/data/cwang/remote/fmri/abcd_preprocessed",
-    "UKB": "/data/cwang/remote/fmri/ukb_preprocessed",
+    "HCPD": "/home/cwang/remote/fmri/hcpd_preprocessed",
+    "HCPA": "/home/cwang/remote/fmri/hcpa_processed",
+    "ABCD": "/home/cwang/remote/fmri/abcd_preprocessed",
+    "UKB": "/home/cwang/remote/fmri/ukb_preprocessed",
 }
 
 # Best (atlas, num_rois, fc_type, lr) per (model, task) from prior sweeps

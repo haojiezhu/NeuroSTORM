@@ -6,8 +6,8 @@ directory and produces a single data.pt with:
 
 Usage:
     python datasets/convert_frames_to_blob.py \
-        --input_dir /data/cwang/remote/fmri/ABCD_MNI_to_TRs_minmax/img \
-        --output_dir /data/cwang/remote/fmri/ABCD_MNI_to_TRs_minmax/img \
+        --input_dir /home/cwang/remote/fmri/ABCD_MNI_to_TRs_minmax/img \
+        --output_dir /home/cwang/remote/fmri/ABCD_MNI_to_TRs_minmax/img \
         --num_processes 16
 
 If --output_dir equals --input_dir, data.pt is written alongside the

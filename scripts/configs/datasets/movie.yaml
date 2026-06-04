@@ -10,5 +10,6 @@ tasks:
     num_classes: 5
 
 defaults:
+  split_root: ./nas/splits
   dataset_split_num: 1
   limit_training_samples: 1.0

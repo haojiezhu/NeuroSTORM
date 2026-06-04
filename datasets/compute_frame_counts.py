@@ -5,8 +5,8 @@ Writes a frame_counts.json mapping subject_name -> num_frames.
 This avoids slow per-subject torch.load calls over NFS at training time.
 
 Usage:
-    python datasets/compute_frame_counts.py /data/cwang/remote/fmri/hcpya_preprocessed
-    python datasets/compute_frame_counts.py /data/cwang/remote/fmri/hcpa_processed /data/cwang/remote/fmri/hcpd_preprocessed
+    python datasets/compute_frame_counts.py /home/cwang/remote/fmri/hcpya_preprocessed
+    python datasets/compute_frame_counts.py /home/cwang/remote/fmri/hcpa_processed /home/cwang/remote/fmri/hcpd_preprocessed
 """
 import json
 import os

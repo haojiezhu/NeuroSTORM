@@ -2,6 +2,12 @@ import os
 import warnings
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
+_early_parser = ArgumentParser(add_help=False)
+_early_parser.add_argument("--gpu_ids", type=str, default=None)
+_early_args, _ = _early_parser.parse_known_args()
+if _early_args.gpu_ids is not None and "LOCAL_RANK" not in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = _early_args.gpu_ids
+
 # Silence noisy third-party warnings before any heavy imports so that the
 # `FutureWarning`s raised when mamba_ssm loads its @custom_fwd/@custom_bwd
 # decorators are suppressed at import time.
@@ -84,6 +90,7 @@ def cli_main():
     parser.add_argument("--resume_ckpt_path", type=str, help="A path to previous checkpoint. Use when you want to continue the training from the previous checkpoints")
     parser.add_argument("--load_model_path", type=str, help="A path to the pre-trained model weight file (.pth)")
     parser.add_argument("--test_only", action='store_true', help="Whether to test the checkpoints (model weights)")
+    parser.add_argument("--validate_only", action='store_true', help="Run trainer.validate on the ckpt and exit (covers both val + test loaders)")
     parser.add_argument("--test_ckpt_path", type=str, help="A path to the previous checkpoint that intends to evaluate (--test_only should be True)")
     parser.add_argument("--print_flops", action='store_true', help="Whether to print the number of FLOPs")
     parser.add_argument("--gpu_ids", type=str, default=None, help="Comma-separated list of GPU IDs to use (e.g., '0,1,2'). If not specified, uses all available GPUs")
@@ -104,7 +111,6 @@ def cli_main():
     # Handle GPU selection
     # Priority: --gpu_ids > --num_gpus > CUDA_VISIBLE_DEVICES > all GPUs
     if args.gpu_ids is not None:
-        os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_ids
         num_gpus = len(args.gpu_ids.split(','))
     elif args.num_gpus is not None:
         num_gpus = min(args.num_gpus, torch.cuda.device_count())
@@ -134,7 +140,7 @@ def cli_main():
     if args.output_dir is not None:
         setattr(args, "default_root_dir", args.output_dir)
     else:
-        setattr(args, "default_root_dir", os.path.join('output', category_dir, args.project_name))
+        setattr(args, "default_root_dir", os.path.join('nas', 'output', category_dir, args.project_name))
 
     resume_ckpt_path = None if args.resume_ckpt_path is None else args.resume_ckpt_path
     if args.resume_ckpt_path is None and args.auto_resume:
@@ -184,14 +190,27 @@ def cli_main():
     # ------------ callbacks -------------
     # callback for pretraining task
     if args.pretraining:
-        checkpoint_callback = ModelCheckpoint(
-            dirpath=dirpath,
-            monitor="valid_loss",
-            filename="checkpt-{epoch:02d}-{valid_loss:.2f}",
-            save_last=True,
-            mode="min",
-            save_on_train_epoch_end=False,
-        )
+        if getattr(args, 'use_contrastive', False):
+            # Contrastive SSL: valid_loss on the InfoNCE objective is uninformative
+            # (in-batch negatives at eval time collapse the metric), so we monitor
+            # train_loss instead and save at every train epoch end.
+            checkpoint_callback = ModelCheckpoint(
+                dirpath=dirpath,
+                monitor="train_loss",
+                filename="checkpt-{epoch:02d}-{train_loss:.4f}",
+                save_last=True,
+                mode="min",
+                save_on_train_epoch_end=True,
+            )
+        else:
+            checkpoint_callback = ModelCheckpoint(
+                dirpath=dirpath,
+                monitor="valid_loss",
+                filename="checkpt-{epoch:02d}-{valid_loss:.2f}",
+                save_last=True,
+                mode="min",
+                save_on_train_epoch_end=False,
+            )
     # callback for classification task
     elif args.downstream_task_type == "classification":
         if args.task_name == 'fmri_reid':
@@ -242,6 +261,13 @@ def cli_main():
 
     use_custom_sampler = getattr(args, 'reweighting_strategy', None) is not None
 
+    # Contrastive SSL: skip val/test loops entirely (the InfoNCE eval metric is
+    # uninformative — see ckpt callback above). MAE still benefits from val/test.
+    skip_eval = bool(getattr(args, 'pretraining', False) and getattr(args, 'use_contrastive', False))
+    extra_trainer_kwargs = {}
+    if skip_eval:
+        extra_trainer_kwargs.update(limit_val_batches=0, limit_test_batches=0, num_sanity_val_steps=0)
+
     if args.grad_clip:
         trainer = pl.Trainer.from_argparse_args(
             args,
@@ -254,6 +280,7 @@ def cli_main():
             devices=trainer_devices,
             strategy=strategy,
             replace_sampler_ddp=not use_custom_sampler,
+            **extra_trainer_kwargs,
         )
     else:
         trainer = pl.Trainer.from_argparse_args(
@@ -265,9 +292,23 @@ def cli_main():
             devices=trainer_devices,
             strategy=strategy,
             replace_sampler_ddp=not use_custom_sampler,
+            **extra_trainer_kwargs,
         )
 
     # ------------ model -------------
+    if args.load_model_path is not None and os.path.exists(args.load_model_path):
+        try:
+            _peek = torch.load(args.load_model_path, map_location="cpu", weights_only=False)
+            _hp = _peek.get("hyper_parameters", {})
+            _ckpt_tpt = _hp.get("tpt_strategy", "none")
+            if _ckpt_tpt and _ckpt_tpt != "none" and getattr(args, "tpt_strategy", "none") == "none":
+                args.tpt_strategy = _ckpt_tpt
+                args.prompt_len = int(_hp.get("prompt_len", args.prompt_len))
+                print(f"[TPT auto-load] inherited from ckpt: tpt_strategy={args.tpt_strategy}, prompt_len={args.prompt_len}")
+            del _peek, _hp
+        except Exception as e:
+            print(f"[TPT auto-load] skipped (could not peek ckpt hparams): {e}")
+
     model = LightningModel(data_module = data_module, **vars(args))
 
     path = None
@@ -309,7 +350,9 @@ def cli_main():
         apply_tpt(model, args.tpt_strategy)
 
     # ------------ run -------------
-    if args.test_only:
+    if args.validate_only:
+        trainer.validate(model, datamodule=data_module, ckpt_path=args.test_ckpt_path)
+    elif args.test_only:
         trainer.test(model, datamodule=data_module, ckpt_path=args.test_ckpt_path) # dataloaders=data_module
     else:
         if args.resume_ckpt_path is None:

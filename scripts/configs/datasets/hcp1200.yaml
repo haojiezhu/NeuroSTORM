@@ -1,6 +1,6 @@
 dataset_name: HCP1200
-image_path: /data/cwang/remote/fmri/hcpya_preprocessed
-image_path_fc: /data/cwang/remote/fmri/hcpya_preprocessed
+image_path: /home/cwang/remote/fmri/hcpya_preprocessed
+image_path_fc: /home/cwang/remote/fmri/hcpya_preprocessed
 
 tasks:
   task1:
@@ -21,4 +21,6 @@ tasks:
 
 defaults:
   dataset_split_num: 1
+  split_root: ./nas/splits
   limit_training_samples: 1.0
+  output_dir: ./nas/output/volume-based
