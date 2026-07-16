@@ -1,4 +1,5 @@
 import os
+import pickle
 import torch
 from torch.utils.data import Dataset, IterableDataset
 import torch.nn.functional as F
@@ -100,6 +101,16 @@ class BaseDataset(Dataset):
             self._format_cache[subject_path] = fmt
         return fmt
 
+    @staticmethod
+    def _load_blob_file(blob_path, mmap):
+        """Load a trusted preprocessed data.pt blob across PyTorch versions."""
+        try:
+            return torch.load(blob_path, mmap=mmap, weights_only=True)
+        except pickle.UnpicklingError:
+            # Older preprocessing wrote numpy scalar metadata that PyTorch 2.6's
+            # weights_only loader rejects. These blobs are generated locally.
+            return torch.load(blob_path, mmap=mmap, weights_only=False)
+
     def _get_blob(self, subject_path):
         """Lazily load a subject's data.pt; LRU-evict older entries.
 
@@ -116,13 +127,13 @@ class BaseDataset(Dataset):
         prefer_mmap = os.environ.get("NEUROSTORM_BLOB_MMAP", "1") != "0"
         if prefer_mmap:
             try:
-                blob = torch.load(blob_path, mmap=True, weights_only=True)
+                blob = self._load_blob_file(blob_path, mmap=True)
             except RuntimeError as e:
                 if "Operation not permitted" not in str(e):
                     raise
-                blob = torch.load(blob_path, mmap=False, weights_only=True)
+                blob = self._load_blob_file(blob_path, mmap=False)
         else:
-            blob = torch.load(blob_path, mmap=False, weights_only=True)
+            blob = self._load_blob_file(blob_path, mmap=False)
         self._data_blobs[subject_path] = blob
         while len(self._data_blobs) > self._blob_cache_max:
             self._data_blobs.popitem(last=False)
@@ -156,12 +167,12 @@ class BaseDataset(Dataset):
         if self._detect_format(subject_path) == 'blob':
             peek_path = os.path.join(subject_path, 'data.pt')
             try:
-                peek = torch.load(peek_path, mmap=True, weights_only=True)
+                peek = self._load_blob_file(peek_path, mmap=True)
             except RuntimeError as e:
                 if "Operation not permitted" not in str(e):
                     self._num_frames_cache[subject_path] = 0
                     return 0
-                peek = torch.load(peek_path, mmap=False, weights_only=True)
+                peek = self._load_blob_file(peek_path, mmap=False)
             n = int(peek['num_frames'])
             del peek
         else:

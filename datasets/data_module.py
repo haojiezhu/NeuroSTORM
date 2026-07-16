@@ -945,7 +945,12 @@ class fMRIDataModule(pl.LightningDataModule):
 
             # diagnosis, clinical_variables
             if self.hparams.task_name == 'diagnosis': 
-                csv_file = self.hparams.task_name + '.csv'
+                csv_candidates = ['transdiag_diagnosis.csv', 'diagnosis.csv']
+                csv_file = next(
+                    (name for name in csv_candidates
+                     if os.path.exists(os.path.join(self.hparams.image_path, "metadata", name))),
+                    'diagnosis.csv',
+                )
             else:
                 csv_file = 'clinical_variables.csv'
 
@@ -957,8 +962,15 @@ class fMRIDataModule(pl.LightningDataModule):
             meta_data = pd.read_csv(os.path.join(self.hparams.image_path, "metadata", csv_file), encoding='ISO-8859-1')
             if self.hparams.task_name == 'diagnosis': 
                 task_name = 'diagnosis'
-                # label_name = 'Group'
-                label_name = 'Diagnostic_Category_Code'
+                if 'Diagnostic_Category_Code' in meta_data.columns:
+                    label_name = 'Diagnostic_Category_Code'
+                elif 'Group' in meta_data.columns:
+                    label_name = 'Group'
+                else:
+                    raise ValueError(
+                        "TransDiag diagnosis metadata must contain either "
+                        "'Diagnostic_Category_Code' or 'Group'."
+                    )
             else: task_name = 'clinical_variables'
 
             print('downstream_task_id = {}, task_name = {}'.format(self.hparams.downstream_task_id, task_name))
@@ -971,7 +983,11 @@ class fMRIDataModule(pl.LightningDataModule):
                 meta_task = meta_data[['subjectkey', label_name]].dropna()
             
             for subject in subject_list:
-                subject_id = subject[:4] + '_' + subject[4:-5]
+                raw_subject = subject[4:] if subject.startswith('sub-') else subject
+                if raw_subject.startswith('NDARINV'):
+                    subject_id = raw_subject[:4] + '_' + raw_subject[4:]
+                else:
+                    subject_id = subject[:4] + '_' + subject[4:-5]
                 if subject_id in meta_task['subjectkey'].values:
                     if task_name == 'diagnosis':
                         sex = meta_task[meta_task["subjectkey"]==subject_id]['sex'].values[0]
