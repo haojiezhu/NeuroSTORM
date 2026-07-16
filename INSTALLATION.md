@@ -121,7 +121,7 @@ pip install "setuptools<81"
 
 # PyTorch Lightning and utilities
 pip install pytorch-lightning==1.9.4
-pip install tensorboard tensorboardX tqdm ipdb nvitop
+pip install tensorboard tensorboardX neptune tqdm ipdb nvitop
 
 # Pin transformers for mamba-ssm compatibility
 pip install "transformers<=4.39.3"
