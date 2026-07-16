@@ -9,7 +9,7 @@
   <a href='https://www.nature.com/articles/s41551-026-01666-y'><img src='https://img.shields.io/badge/Paper-Nature_BME-red'></a>  &nbsp;
   <a href='https://cuhk-aim-group.github.io/NeuroSTORM/'><img src='https://img.shields.io/badge/Project-NeuroSTORM-green'></a> &nbsp;
   <a href='https://github.com/CUHK-AIM-Group/NeuroSTORM'><img src="https://img.shields.io/badge/GitHub-NeuroSTORM-9E95B7?logo=github"></a> &nbsp; 
-  <a href=''><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Model-NeuroSTORM-blue'></a> &nbsp; 
+  <a href='https://huggingface.co/zxcvb20001/NeuroSTORM'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Model-NeuroSTORM-blue'></a> &nbsp;
 </div>
 
 
